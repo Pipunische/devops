@@ -1,19 +1,23 @@
-version: '3.8'
-
 services:
-  # База данных
-
+  # 1. БАЗА ДАННЫХ
   db:
     image: postgres:15
     container_name: poker_db
     environment:
       POSTGRES_DB: poker_db
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: pass # Пароль должен совпадать с тем, что в бэкенде
+      POSTGRES_PASSWORD: pass
     ports:
       - "5432:5432"
 
-  # Бэкенд на Java
+  # 2. КЭШ REDIS (тот самый, который "пропал")
+  redis:
+    image: redis:7-alpine
+    container_name: poker_redis
+    ports:
+      - "6379:6379"
+
+  # 3. БЭКЕНД
   backend:
     build: ../backend
     container_name: poker_backend
@@ -23,19 +27,18 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - DB_HOST=db
-      - DB_USER=user
-      - DB_PASSWORD=pass
-      - DB_NAME=casino
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/poker_db
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=pass
       - REDIS_HOST=redis
 
-  # Фронтенд на Python
+  # 4. ФРОНТЕНД
   frontend:
     build: ../frontend
     container_name: poker_frontend
+    depends_on:
+      - backend
     ports:
       - "8000:8000"
     volumes:
       - ../frontend:/app
-    environment:
-      - DATABASE_URL=postgres://user:pass@db:5432/casino
