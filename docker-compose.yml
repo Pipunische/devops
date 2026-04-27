@@ -9,11 +9,10 @@ services:
       POSTGRES_PASSWORD: pass
     ports:
       - "5432:5432"
-      
-       volumes:
+    volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
 
-  # 2. КЭШ REDIS (тот самый, который "пропал")
+  # 2. КЭШ REDIS
   redis:
     image: redis:7-alpine
     container_name: poker_redis
