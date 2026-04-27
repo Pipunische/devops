@@ -13,20 +13,6 @@ services:
     ports:
       - "5432:5432"
 
-  backend:
-    build: ../backend
-    container_name: poker_backend
-    depends_on:
-      - db
-      - redis
-    ports:
-      - "8080:8080"
-    environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/poker_db
-      - SPRING_DATASOURCE_USERNAME=postgres
-      - SPRING_DATASOURCE_PASSWORD=pass
-      - REDIS_HOST=redis
-
   # Бэкенд на Java
   backend:
     build: ../backend
