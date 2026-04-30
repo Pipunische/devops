@@ -1,0 +1,248 @@
+package com.poker.controller;
+
+import com.poker.dto.*;
+import com.poker.exception.ChipAmountException;
+import com.poker.exception.IllegalTableStateException;
+import com.poker.exception.InvalidCredentialsException;
+import com.poker.model.Player;
+import com.poker.model.PlayerAction;
+import com.poker.model.Table;
+import com.poker.model.TransactionType;
+import com.poker.persistence.entity.Account;
+import com.poker.service.AccountService;
+import com.poker.service.GameEventPublisher;
+import com.poker.service.TableManager;
+import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
+
+@CrossOrigin(origins = "*")
+@RestController
+@RequestMapping("/api/tables")
+public class TableController {
+    private final TableManager tableManager;
+    private final AccountService accountService;
+    private final GameEventPublisher eventPublisher;
+
+    @Autowired
+    public TableController(TableManager tableManager, AccountService accountService, GameEventPublisher eventPublisher) {
+        this.tableManager = tableManager;
+        this.accountService = accountService;
+        this.eventPublisher = eventPublisher;
+    }
+
+    private String extractToken(String authHeader) {
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            throw new InvalidCredentialsException("Missing or invalid Authorization header");
+        }
+
+        return authHeader.substring(7);
+    }
+
+    @GetMapping
+    public List<TableDTO> getLobby() {
+        Collection<Table> tables = tableManager.getAllTables();
+
+        return tables.stream()
+                .map(TableDTO::createTableDTO)
+                .toList();
+    }
+
+    @GetMapping("/{id}")
+    public TableDetailsDTO getTableDetails(@PathVariable String id) {
+        Table table = tableManager.getTable(id);
+
+        if (table == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Table not found");
+        }
+
+        return TableDetailsDTO.createTableDetailsDTO(table);
+    }
+
+    @PostMapping("/{id}/join")
+    public TableDetailsDTO joinTable(
+            @RequestHeader("Authorization") String authHeader,
+            @PathVariable String id,
+            @RequestBody JoinRequestDTO request) {
+
+        String token = extractToken(authHeader);
+        accountService.validateSession(Long.parseLong(request.userId()), token);
+
+        Table table = tableManager.getTable(id);
+        if (table == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Table not found");
+        }
+
+        if (tableManager.isPlayerActive(request.userId())) {
+            throw new IllegalTableStateException("You are already playing at a table!");
+        }
+
+        if (table.isPrivate()) {
+            if (request.passcode() == null || request.passcode().isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Password required");
+            }
+
+            if (!table.getPasscode().equals(request.passcode())) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Wrong password");
+            }
+        }
+
+        long userBuyIn = request.chips();
+
+        if (userBuyIn < table.getMinBuyIn()) {
+            throw new ChipAmountException("Insufficient buy-in...");
+        }
+        if (userBuyIn > table.getMaxBuyIn()) {
+            throw new ChipAmountException("Buy-in exceeds limit...");
+        }
+
+        Long userId = Long.parseLong(request.userId());
+
+        accountService.withdrawFromWallet(userId, userBuyIn, id, TransactionType.BUY_IN);
+
+        Account account = accountService.findById(userId);
+
+        Player newPlayer = new Player(
+                String.valueOf(account.getId()),
+                account.getNickname(),
+                table.getFreeSeat(),
+                new AtomicLong(account.getBalance()),
+                new AtomicLong(userBuyIn)
+        );
+
+        table.joinTable(newPlayer);
+        tableManager.registerPlayer(request.userId(), id);
+
+        return TableDetailsDTO.createTableDetailsDTO(table);
+    }
+
+    @PostMapping("/{id}/leave")
+    public TableDetailsDTO leaveTable(@RequestHeader("Authorization") String authHeader,
+                                      @PathVariable String id,
+                                      @RequestBody LeaveRequestDTO request) {
+        String token = extractToken(authHeader);
+
+        accountService.validateSession(Long.parseLong(request.userId()), token);
+
+        Table table = tableManager.getTable(id);
+
+        if (table == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Table not found");
+        }
+
+        Player player = table.findPlayerById(request.userId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        table.leaveTable(player);
+
+        return TableDetailsDTO.createTableDetailsDTO(table);
+    }
+
+    @PostMapping("/{id}/rebuy")
+    public RebuyResponseDTO rebuy(@RequestHeader("Authorization") String authHeader,
+                                  @PathVariable String id,
+                                  @RequestBody RebuyRequestDTO request) {
+        String token = extractToken(authHeader);
+        accountService.validateSession(Long.parseLong(request.userId()), token);
+
+        Table table = tableManager.getTable(id);
+        if (table == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Table not found");
+        }
+
+        Player player = table.findPlayerById(request.userId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Player not found"));
+
+        long amount = request.amount();
+
+        if (player.getChips().get() + amount > table.getMaxBuyIn()) {
+            throw new ChipAmountException("Rebuy amount exceeds the maximum table limit: " + table.getMaxBuyIn());
+        }
+
+        if (player.getChips().get() + amount < table.getBigBlindBet()) {
+            throw new ChipAmountException("Total stack after rebuy must meet the minimum requirement of " + table.getBigBlindBet());
+        }
+
+        accountService.withdrawFromWallet(Long.parseLong(player.getUserId()), amount, id, TransactionType.REBUY);
+
+        Account account = accountService.findById(Long.parseLong(player.getUserId()));
+        long realWalletBalance = account.getBalance();
+
+        table.rebuy(player, amount, realWalletBalance);
+
+        return new RebuyResponseDTO(
+                player.getChips().get(),
+                realWalletBalance
+        );
+    }
+
+    @PostMapping("/{id}/action")
+    public TableDetailsDTO action(@RequestHeader("Authorization") String authHeader,
+                                  @PathVariable String id,
+                                  @RequestBody ActionRequestDTO request) {
+        String token = extractToken(authHeader);
+        accountService.validateSession(Long.parseLong(request.userId()), token);
+
+        Table table = tableManager.getTable(id);
+        if (table == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Table not found");
+        }
+
+        Optional<Player> playerOpt = table.findPlayerById(request.userId());
+        if (playerOpt.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Player not found");
+        }
+
+        Player player = playerOpt.get();
+        PlayerAction action = new PlayerAction(request.type(), request.amount());
+
+        table.handleAction(player, action);
+
+        eventPublisher.publishPlayerAction(new com.poker.dto.events.PlayerActionEvent(
+                "PLAYER_ACTION",
+                id,
+                player.getSeatIndex(),
+                request.type(),
+                request.amount(),
+                com.poker.dto.events.PlayerPublicStateDTO.fromPlayer(player),
+                table.getPot()
+        ));
+
+        return TableDetailsDTO.createTableDetailsDTO(table);
+    }
+
+    @PostMapping
+    public TableDetailsDTO createTable(
+            @RequestHeader("Authorization") String authHeader,
+            @Valid @RequestBody CreateTableRequestDTO request) {
+
+        String token = extractToken(authHeader);
+        accountService.validateSession(Long.parseLong(request.userId()), token);
+
+        return tableManager.createTable(
+                request.name(),
+                request.smallBlind(),
+                request.bigBlind(),
+                request.minPlayersNum(),
+                request.maxPlayersNum(),
+                request.userId(),
+                request.chips(),
+                request.passcode()
+        );
+    }
+
+    @DeleteMapping("/{id}")
+    public void deleteTable(@PathVariable String id) {
+        Table removedTable = tableManager.removeTable(id);
+        if (removedTable == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Table not found");
+        }
+    }
+}

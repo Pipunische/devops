@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-wheel-metadata/
+.idea/
+.vscode/
+
+# Environment variables
+.env
+.env.*
+
+# Logs
+*.log
+
+# Temp files
+*.tmp
+
+*.pyc
+
+.cursor/
+
+.DS_Store
