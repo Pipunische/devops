@@ -1,0 +1,21 @@
+name: Deploy Poker Game
+
+on:
+  push:
+    branches: [ test ] # Робот сработает только когда ты пушишь в ветку test
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}       # Берет из настроек GitHub
+          username: ${{ secrets.VPS_USER }}   # Берет из настроек GitHub
+          key: ${{ secrets.SSH_PRIVATE_KEY }} # Твой секретный ключ
+          script: |
+            cd ~/my_app
+            # Запускаем твой скрипт обновления
+            chmod +x update_game.sh
+            ./update_game.sh
